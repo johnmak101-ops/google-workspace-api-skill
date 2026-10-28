@@ -1,0 +1,22 @@
+import type { ApiOperation } from '../catalog.js';
+import { flag, integer, object, query, rest, schema, scope, strings, text } from './helpers.js';
+
+const origin = 'https://www.googleapis.com';
+const listRead = [scope('calendar.calendarlist.readonly')];
+const read = [scope('calendar.events.readonly')];
+const freeBusy = [scope('calendar.events.freebusy')];
+const write = [scope('calendar.events')];
+const eventBody = { summary: text, description: text, location: text, start: object, end: object, attendees: { type: 'array', items: object }, recurrence: strings };
+const eventParams = ['summary', 'description', 'location', 'start', 'end', 'attendees', 'recurrence'];
+
+export const calendarOperations: readonly ApiOperation[] = [
+  rest({ service: 'calendar', name: 'list_calendars', description: 'List calendars visible to the user.', method: 'GET', origin, path: '/calendar/v3/users/me/calendarList', readOnly: true, scopes: listRead, inputSchema: schema({ pageSize: integer, pageToken: text }), queryParams: { pageSize: query('maxResults', 'number'), pageToken: query('pageToken') } }),
+  rest({ service: 'calendar', name: 'list_events', description: 'List events from one calendar.', method: 'GET', origin, path: '/calendar/v3/calendars/{calendarId}/events', readOnly: true, scopes: read, inputSchema: schema({ calendarId: text, timeMin: text, timeMax: text, pageSize: integer, pageToken: text, singleEvents: flag, orderBy: text }, ['calendarId']), pathParams: ['calendarId'], queryParams: { timeMin: query('timeMin'), timeMax: query('timeMax'), pageSize: query('maxResults', 'number'), pageToken: query('pageToken'), singleEvents: query('singleEvents', 'boolean'), orderBy: query('orderBy') } }),
+  rest({ service: 'calendar', name: 'search_events', description: 'Search events in one calendar.', method: 'GET', origin, path: '/calendar/v3/calendars/{calendarId}/events', readOnly: true, scopes: read, inputSchema: schema({ calendarId: text, query: text, timeMin: text, timeMax: text, pageSize: integer, pageToken: text }, ['calendarId', 'query']), pathParams: ['calendarId'], queryParams: { query: query('q', 'string', true), timeMin: query('timeMin'), timeMax: query('timeMax'), pageSize: query('maxResults', 'number'), pageToken: query('pageToken') } }),
+  rest({ service: 'calendar', name: 'get_event', description: 'Read one calendar event.', method: 'GET', origin, path: '/calendar/v3/calendars/{calendarId}/events/{eventId}', readOnly: true, scopes: read, inputSchema: schema({ calendarId: text, eventId: text }, ['calendarId', 'eventId']), pathParams: ['calendarId', 'eventId'] }),
+  rest({ service: 'calendar', name: 'create_event', description: 'Create a calendar event.', method: 'POST', origin, path: '/calendar/v3/calendars/{calendarId}/events', readOnly: false, scopes: write, inputSchema: schema({ calendarId: text, ...eventBody }, ['calendarId', 'summary', 'start', 'end']), pathParams: ['calendarId'], bodyParams: eventParams }),
+  rest({ service: 'calendar', name: 'update_event', description: 'Update a calendar event.', method: 'PATCH', origin, path: '/calendar/v3/calendars/{calendarId}/events/{eventId}', readOnly: false, scopes: write, inputSchema: schema({ calendarId: text, eventId: text, ...eventBody }, ['calendarId', 'eventId']), pathParams: ['calendarId', 'eventId'], bodyParams: eventParams }),
+  rest({ service: 'calendar', name: 'delete_event', description: 'Delete a calendar event.', method: 'DELETE', origin, path: '/calendar/v3/calendars/{calendarId}/events/{eventId}', readOnly: false, scopes: write, inputSchema: schema({ calendarId: text, eventId: text }, ['calendarId', 'eventId']), pathParams: ['calendarId', 'eventId'] }),
+  rest({ service: 'calendar', name: 'respond_to_event', description: 'Set attendee response status on an event.', method: 'PATCH', origin, path: '/calendar/v3/calendars/{calendarId}/events/{eventId}', readOnly: false, scopes: write, inputSchema: schema({ calendarId: text, eventId: text, attendees: { type: 'array', items: object } }, ['calendarId', 'eventId', 'attendees']), pathParams: ['calendarId', 'eventId'], bodyParams: ['attendees'] }),
+  rest({ service: 'calendar', name: 'check_free_busy', description: 'Check free/busy information for calendars.', method: 'POST', origin, path: '/calendar/v3/freeBusy', readOnly: true, scopes: freeBusy, inputSchema: schema({ timeMin: text, timeMax: text, items: { type: 'array', items: object } }, ['timeMin', 'timeMax', 'items']), bodyParams: ['timeMin', 'timeMax', 'items'] }),
+];

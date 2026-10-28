@@ -1,4 +1,5 @@
 import { WorkspaceError } from './errors.js';
+import { operationFor, operationsFor } from './operations/index.js';
 
 export const SERVICE_NAMES = [
   'gmail', 'drive', 'calendar', 'people', 'docs', 'sheets', 'slides',
@@ -14,6 +15,8 @@ export interface QueryParam {
   readonly wireName: string;
   readonly type: QueryType;
   readonly required?: boolean;
+  readonly defaultValue?: string | number | boolean;
+  readonly join?: ',';
 }
 
 export interface ApiOperation {
@@ -136,7 +139,7 @@ const services: Readonly<Record<ServiceName, ServiceConfig>> = {
   },
   universal: {
     name: 'universal', origins: ['local'], writeAvailable: false,
-    readScopes: Object.values(universalScopes), writeScopes: [],
+    readScopes: [...Object.values(universalScopes), scope('chat.spaces.readonly')], writeScopes: [],
     documentation: 'https://developers.google.com/workspace',
   },
 };
@@ -166,4 +169,12 @@ export function scopesFor(selection: readonly ServiceSelection[], options: Scope
     }
   }
   return [...scopes].sort();
+}
+
+export function listOperations(service: ServiceName): readonly ApiOperation[] {
+  return operationsFor(service);
+}
+
+export function getOperation(service: ServiceName, name: string): ApiOperation {
+  return operationFor(service, name);
 }
