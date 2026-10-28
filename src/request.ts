@@ -7,7 +7,7 @@ export interface PreparedRequest {
   readonly url: string;
   readonly method: string;
   readonly headers: Record<string, string>;
-  readonly body?: string | Buffer;
+  readonly body?: string;
 }
 
 function invalid(name: string, expectation: string): never {
