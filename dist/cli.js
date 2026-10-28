@@ -1322,6 +1322,74 @@ var TokenStore = class {
   }
 };
 
+// src/universal.ts
+function isProduct(value) {
+  return typeof value === "string" && UNIVERSAL_PRODUCTS.includes(value);
+}
+function positiveInteger(value, fallback, maximum, name) {
+  const resolved = value ?? fallback;
+  if (typeof resolved !== "number" || !Number.isInteger(resolved) || resolved < 1 || resolved > maximum) {
+    throw new WorkspaceError("INVALID_ARGUMENT", `${name} must be an integer from 1 to ${maximum}.`);
+  }
+  return resolved;
+}
+function records(value, key) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return [];
+  const items = value[key];
+  return Array.isArray(items) ? items.filter((item) => item !== null && typeof item === "object" && !Array.isArray(item)) : [];
+}
+async function chatSearch(query2, spaceLimit, invokeRead) {
+  const response = await invokeRead("chat", "list_spaces", { pageSize: spaceLimit });
+  const spaces2 = records(response, "spaces").slice(0, spaceLimit);
+  const needle = query2.toLowerCase();
+  const results2 = [];
+  for (const space of spaces2) {
+    const name = typeof space.name === "string" ? space.name : "";
+    if (!name.startsWith("spaces/")) continue;
+    const spaceId = name.slice("spaces/".length);
+    const messagesResponse = await invokeRead("chat", "list_messages", { spaceId, pageSize: 10 });
+    const messages2 = records(messagesResponse, "messages").filter((message) => typeof message.text === "string" && message.text.toLowerCase().includes(needle));
+    results2.push({ space: name, messages: messages2 });
+  }
+  return results2;
+}
+function driveQuery(query2) {
+  return `fullText contains '${query2.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
+}
+async function searchUniversal(args, invokeRead) {
+  const allowedKeys = /* @__PURE__ */ new Set(["query", "products", "pageSize", "spaceLimit"]);
+  for (const key of Object.keys(args)) {
+    if (!allowedKeys.has(key)) throw new WorkspaceError("INVALID_ARGUMENT", `Unknown federated-search argument: ${key}`);
+  }
+  if (typeof args.query !== "string" || !args.query.trim()) throw new WorkspaceError("INVALID_ARGUMENT", "query must be a non-empty string.");
+  const query2 = args.query.trim();
+  if (args.products !== void 0 && (!Array.isArray(args.products) || args.products.length === 0 || !args.products.every(isProduct))) {
+    throw new WorkspaceError("INVALID_ARGUMENT", `products must contain only: ${UNIVERSAL_PRODUCTS.join(", ")}`);
+  }
+  const products = args.products ?? UNIVERSAL_PRODUCTS;
+  const pageSize = positiveInteger(args.pageSize, 3, 10, "pageSize");
+  const spaceLimit = positiveInteger(args.spaceLimit, 2, 5, "spaceLimit");
+  const tasks = products.map(async (product) => {
+    if (product === "gmail") return { service: product, data: await invokeRead("gmail", "search_messages", { query: query2, pageSize }) };
+    if (product === "drive") return { service: product, data: await invokeRead("drive", "search_files", { query: driveQuery(query2), pageSize }) };
+    if (product === "calendar") return { service: product, data: await invokeRead("calendar", "search_events", { calendarId: "primary", query: query2, pageSize }) };
+    return { service: product, data: await chatSearch(query2, spaceLimit, invokeRead) };
+  });
+  const settled = await Promise.allSettled(tasks);
+  const results2 = [];
+  const errors = [];
+  settled.forEach((result, index) => {
+    const service = products[index] ?? "unknown";
+    if (result.status === "fulfilled") results2.push(result.value);
+    else errors.push({ service, message: redactError(result.reason) });
+  });
+  return { results: results2, errors };
+}
+async function invokeReadOnly(service, name, args, invoke) {
+  if (!getOperation(service, name).readOnly) throw new WorkspaceError("READ_ONLY_REQUIRED", `${service}.${name} is not read-only.`);
+  return invoke(service, name, args);
+}
+
 // src/cli.ts
 function home(io) {
   return resolveHomeDir(io.env);
@@ -1462,8 +1530,9 @@ async function runCli(argv, io) {
       if (!serviceName || !toolName) throw new WorkspaceError("USAGE", `Usage: ${command} <service> <tool> [--args-file <path>] [--json]`);
       const service = getService(serviceName).name;
       const args = await readArguments(argv, io);
+      if (service === "universal" && command === "mutate") throw new WorkspaceError("READ_ONLY_REQUIRED", "Federated search is read-only. Use call.");
       const { api } = await context(io);
-      const result = await api.invoke(service, toolName, args, command === "mutate");
+      const result = service === "universal" && toolName === "search" ? await searchUniversal(args, (nestedService, nestedName, nestedArgs) => invokeReadOnly(nestedService, nestedName, nestedArgs, (s, n, a) => api.invoke(s, n, a, false))) : await api.invoke(service, toolName, args, command === "mutate");
       if (command === "mutate" && isUnknown(result)) {
         emit(io, makeEnvelope({ service, tool: toolName, status: "unknown", mayHaveCompleted: true, content: result }), flag2(argv, "--json"));
         return 3;

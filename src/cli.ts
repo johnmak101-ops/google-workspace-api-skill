@@ -10,6 +10,7 @@ import { WorkspaceOAuth } from './oauth.js';
 import { capEnvelope, makeEnvelope, redactError, serializeEnvelope, writeBoundedResult, type Envelope } from './output.js';
 import { ResultStore, type StoredResult } from './result-store.js';
 import { TokenStore } from './token-store.js';
+import { invokeReadOnly, searchUniversal } from './universal.js';
 
 export interface CliIo {
   readonly stdout: (text: string) => void;
@@ -176,8 +177,11 @@ export async function runCli(argv: readonly string[], io: CliIo): Promise<number
       if (!serviceName || !toolName) throw new WorkspaceError('USAGE', `Usage: ${command} <service> <tool> [--args-file <path>] [--json]`);
       const service = getService(serviceName).name;
       const args = await readArguments(argv, io);
+      if (service === 'universal' && command === 'mutate') throw new WorkspaceError('READ_ONLY_REQUIRED', 'Federated search is read-only. Use call.');
       const { api } = await context(io);
-      const result = await api.invoke(service, toolName, args, command === 'mutate');
+      const result = service === 'universal' && toolName === 'search'
+        ? await searchUniversal(args, (nestedService, nestedName, nestedArgs) => invokeReadOnly(nestedService, nestedName, nestedArgs, (s, n, a) => api.invoke(s, n, a, false)))
+        : await api.invoke(service, toolName, args, command === 'mutate');
       if (command === 'mutate' && isUnknown(result)) {
         emit(io, makeEnvelope({ service, tool: toolName, status: 'unknown', mayHaveCompleted: true, content: result }), flag(argv, '--json'));
         return 3;
