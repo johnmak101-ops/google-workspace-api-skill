@@ -1143,7 +1143,8 @@ async function protectWindows(target, directory2) {
   if (!sid) throw new WorkspaceError("SECURE_STORAGE", "Cannot determine the Windows SID for token protection.");
   const ownerOnly = async () => {
     const literalPath = target.replace(/'/g, "''");
-    const command = `Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; (Get-Acl -LiteralPath '${literalPath}').Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }`;
+    const securityType = directory2 ? "System.Security.AccessControl.DirectorySecurity" : "System.Security.AccessControl.FileSecurity";
+    const command = `$security = [${securityType}]::new('${literalPath}', 'Access'); $security.Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }`;
     const { stdout } = await execFileAsync(powershellExe, ["-NoProfile", "-Command", command], { windowsHide: true });
     const entries = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     return entries.length > 0 && entries.every((entry) => entry.toUpperCase() === sid.toUpperCase());

@@ -14,9 +14,11 @@ test('CI verifies Windows, macOS, and Linux on Node 24.22.1', () => {
   assert.match(workflow, /npm audit/);
 });
 
-test('Windows ACL checks import the required PowerShell security module explicitly', () => {
+test('Windows ACL checks use built-in .NET security classes without Get-Acl', () => {
   const source = fs.readFileSync('src/secure-fs.ts', 'utf8');
-  assert.match(source, /Import-Module Microsoft\.PowerShell\.Security -ErrorAction Stop/);
+  assert.match(source, /System\.Security\.AccessControl\.DirectorySecurity/);
+  assert.match(source, /System\.Security\.AccessControl\.FileSecurity/);
+  assert.doesNotMatch(source, /Get-Acl|Import-Module Microsoft\.PowerShell\.Security/);
 });
 
 test('documentation states cross-platform support and verification boundaries', () => {
