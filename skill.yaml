@@ -1,0 +1,82 @@
+name: google-workspace-api
+version: 0.1.0
+description: Use ordinary Google Workspace APIs with local OAuth and bounded tool discovery.
+category: productivity
+
+author:
+  name: johnmak101-ops
+  url: https://github.com/johnmak101-ops
+
+license: MIT
+homepage: https://github.com/johnmak101-ops/google-workspace-api-skill
+repository: johnmak101-ops/google-workspace-api-skill
+
+pattern: sandbox
+entrypoint: index.js
+engines:
+  node: 24.22.x
+platforms:
+  - windows
+  - macos
+  - linux
+
+usage_notes: |
+  Discover one schema at a time. Use call for reads and mutate only after exact user confirmation.
+  Drafts and sends are different mutations. Never send when asked to draft.
+  Unknown mutation outcomes use exit code 3 and must never be retried automatically.
+  Use protected argument files or stdin, never inline --args.
+
+commands:
+  - name: services
+    description: List supported services and local authorization metadata
+    options:
+      - --json
+  - name: tools
+    description: List local operations or return one full schema
+    args:
+      - <service>
+    options:
+      - --tool <name>
+      - --json
+  - name: call
+    description: Invoke one confirmed read-only operation with JSON arguments
+    args:
+      - <service>
+      - <tool>
+    options:
+      - --args-file <path>
+      - --json
+  - name: mutate
+    description: Invoke one user-confirmed mutation without automatic retry
+    args:
+      - <service>
+      - <tool>
+    options:
+      - --args-file <path>
+      - --json
+  - name: auth-status
+    description: Show granted scopes and token expiry without token values
+    options:
+      - --json
+
+permissions:
+  network:
+    - accounts.google.com
+    - oauth2.googleapis.com
+    - www.googleapis.com
+    - gmail.googleapis.com
+    - people.googleapis.com
+    - docs.googleapis.com
+    - sheets.googleapis.com
+    - slides.googleapis.com
+    - chat.googleapis.com
+    - classroom.googleapis.com
+    - tasks.googleapis.com
+    - forms.googleapis.com
+    - script.googleapis.com
+  filesystem:
+    read:
+      - "*"
+    write:
+      - "tmp/*"
+      - ".google-workspace-api/*"
