@@ -14,6 +14,11 @@ test('CI verifies Windows, macOS, and Linux on Node 24.22.1', () => {
   assert.match(workflow, /npm audit/);
 });
 
+test('Windows ACL checks import the required PowerShell security module explicitly', () => {
+  const source = fs.readFileSync('src/secure-fs.ts', 'utf8');
+  assert.match(source, /Import-Module Microsoft\.PowerShell\.Security -ErrorAction Stop/);
+});
+
 test('documentation states cross-platform support and verification boundaries', () => {
   const readme = fs.readFileSync('README.md', 'utf8');
   assert.match(readme, /Windows, macOS, and Linux/);
