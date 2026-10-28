@@ -49,6 +49,26 @@ test('unknown, missing, wrongly typed, and null arguments fail before dispatch',
   assert.throws(() => prepareRequest(getOperation('gmail', 'search_messages'), { query: null }), /query/i);
 });
 
+test('metadata-only Drive mutations use JSON and never include an empty media part', () => {
+  const created = prepareRequest(getOperation('drive', 'create_file'), { metadata: { name: 'renamed.txt' } });
+  assert.equal(new URL(created.url).pathname, '/drive/v3/files');
+  assert.equal(new URL(created.url).searchParams.get('uploadType'), null);
+  assert.deepEqual(JSON.parse(created.body), { name: 'renamed.txt' });
+
+  const updated = prepareRequest(getOperation('drive', 'update_file'), { fileId: 'file-1', metadata: { name: 'renamed.txt' } });
+  assert.equal(new URL(updated.url).pathname, '/drive/v3/files/file-1');
+  assert.equal(new URL(updated.url).searchParams.get('uploadType'), null);
+  assert.deepEqual(JSON.parse(updated.body), { name: 'renamed.txt' });
+});
+
+test('nested required fields, item types, integers, and minimums are enforced', () => {
+  assert.throws(() => prepareRequest(getOperation('gmail', 'create_draft'), { message: {} }), /raw/i);
+  assert.throws(() => prepareRequest(getOperation('gmail', 'create_draft'), { message: { raw: 'x', unexpected: true } }), /unexpected/i);
+  assert.throws(() => prepareRequest(getOperation('gmail', 'search_messages'), { pageSize: 1.5 }), /pageSize/i);
+  assert.throws(() => prepareRequest(getOperation('gmail', 'search_messages'), { pageSize: 0 }), /pageSize/i);
+  assert.throws(() => prepareRequest(getOperation('gmail', 'get_message'), { messageId: 123 }), /messageId/i);
+});
+
 test('local operations and oversized bodies are rejected', () => {
   assert.throws(() => prepareRequest(getOperation('universal', 'search'), { query: 'x' }), /local/i);
   assert.throws(() => prepareRequest(getOperation('drive', 'create_file'), {

@@ -159,7 +159,7 @@ export function scopesFor(selection: readonly ServiceSelection[], options: Scope
   for (const item of selection) {
     const service = getService(item.service);
     const readScopes = service.name === 'universal' && options.universalProducts
-      ? options.universalProducts.map((product) => universalScopes[product])
+      ? options.universalProducts.flatMap((product) => product === 'chat' ? [universalScopes.chat, scope('chat.spaces.readonly')] : [universalScopes[product]])
       : service.readScopes;
     for (const value of readScopes) scopes.add(value);
     if (service.name === 'people' && options.directoryAdmin) scopes.add(scope('directory.readonly'));

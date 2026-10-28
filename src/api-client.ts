@@ -90,11 +90,30 @@ export class GoogleApiClient {
     this.maxBinaryBytes = options.maxBinaryBytes ?? 100_000_000;
   }
 
+  private async respondToEvent(args: Record<string, unknown>): Promise<unknown | UnknownMutationResult | BinaryApiResult> {
+    prepareRequest(getOperation('calendar', 'respond_to_event'), args);
+    const event = await this.invoke('calendar', 'get_event', { calendarId: args.calendarId, eventId: args.eventId }, false);
+    if (event === null || typeof event !== 'object' || Array.isArray(event)) throw new WorkspaceError('EVENT_RESPONSE', 'Calendar event response is invalid.');
+    const attendees = (event as Record<string, unknown>).attendees;
+    if (!Array.isArray(attendees)) throw new WorkspaceError('ATTENDEE_NOT_FOUND', 'The current user is not an attendee on this event.');
+    let found = false;
+    const updated = attendees.map((attendee) => {
+      if (attendee !== null && typeof attendee === 'object' && !Array.isArray(attendee) && (attendee as Record<string, unknown>).self === true) {
+        found = true;
+        return { ...(attendee as Record<string, unknown>), responseStatus: args.responseStatus };
+      }
+      return attendee;
+    });
+    if (!found) throw new WorkspaceError('ATTENDEE_NOT_FOUND', 'The current user is not an attendee on this event.');
+    return this.invoke('calendar', 'update_event', { calendarId: args.calendarId, eventId: args.eventId, attendees: updated }, true);
+  }
+
   async invoke(service: ServiceName, name: string, args: Record<string, unknown>, mutation: boolean): Promise<unknown | UnknownMutationResult | BinaryApiResult> {
     const operation = getOperation(service, name);
     if (operation.kind === 'local') throw new WorkspaceError('LOCAL_OPERATION', `${service}.${name} requires local dispatch.`);
     if (mutation && operation.readOnly) throw new WorkspaceError('READ_ONLY_REQUIRED', `${name} is read-only. Use call.`);
     if (!mutation && !operation.readOnly) throw new WorkspaceError('MUTATION_REQUIRED', `${name} is a mutation. Use mutate after user confirmation.`);
+    if (service === 'calendar' && name === 'respond_to_event') return this.respondToEvent(args);
     const request = prepareRequest(operation, args);
     const signal = AbortSignal.timeout(this.timeoutMs);
     let token = await this.getAccessToken(service, signal);
@@ -116,8 +135,14 @@ export class GoogleApiClient {
           continue;
         }
         if (!response.ok) {
-          const body = await readLimitedText(response, 65_536);
-          throw new ApiError(response.status, googleMessage(body, response.status));
+          let message: string;
+          try {
+            message = googleMessage(await readLimitedText(response, 65_536), response.status);
+          } catch (error) {
+            if (!(error instanceof WorkspaceError) || error.code !== 'RESPONSE_TOO_LARGE') throw error;
+            message = `Google API returned HTTP ${response.status} with an oversized error response.`;
+          }
+          throw new ApiError(response.status, message);
         }
         if (operation.binaryResponse) {
           if (!this.resultStore) throw new WorkspaceError('RESULT_STORE_REQUIRED', 'Binary results require a result store.');

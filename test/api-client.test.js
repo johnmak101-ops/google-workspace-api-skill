@@ -54,14 +54,14 @@ test('read refreshes once on 401 and uses the new token', async (t) => {
 test('mutation is never replayed after dispatch', async (t) => {
   let calls = 0;
   const google = await server(t, (_req, res) => { calls += 1; res.writeHead(401).end(); });
-  await assert.rejects(client(google, { refreshAccessToken: async () => 'new-token' }).invoke('gmail', 'create_draft', { message: {} }, true), /401/);
+  await assert.rejects(client(google, { refreshAccessToken: async () => 'new-token' }).invoke('gmail', 'create_draft', { message: { raw: 'x' } }, true), /401/);
   assert.equal(calls, 1);
 });
 
 test('ambiguous mutation failures return unknown without retry', async (t) => {
   let calls = 0;
   const google = await server(t, (_req, res) => { calls += 1; res.writeHead(500).end(); });
-  const result = await client(google).invoke('gmail', 'create_draft', { message: {} }, true);
+  const result = await client(google).invoke('gmail', 'create_draft', { message: { raw: 'x' } }, true);
   assert.equal(result.status, 'unknown');
   assert.equal(result.mayHaveCompleted, true);
   assert.equal(calls, 1);
@@ -106,11 +106,37 @@ test('binary and JSON response limits fail closed', async (t) => {
   await assert.rejects(api.invoke('gmail', 'search_messages', {}, false), /too large/i);
 });
 
+test('event response preserves every other attendee', async (t) => {
+  let patchBody;
+  const google = await server(t, async (req, res) => {
+    if (req.method === 'GET') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ attendees: [{ email: 'other@example.com', responseStatus: 'accepted' }, { email: 'me@example.com', responseStatus: 'needsAction', self: true }] }));
+      return;
+    }
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    patchBody = JSON.parse(Buffer.concat(chunks).toString());
+    res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+  });
+  await client(google).invoke('calendar', 'respond_to_event', { calendarId: 'primary', eventId: 'event-1', responseStatus: 'declined' }, true);
+  assert.deepEqual(patchBody.attendees, [{ email: 'other@example.com', responseStatus: 'accepted' }, { email: 'me@example.com', responseStatus: 'declined', self: true }]);
+});
+
+test('oversized 5xx error bodies preserve unknown mutation outcome', async (t) => {
+  const google = await server(t, (_req, res) => {
+    res.writeHead(500, { 'content-type': 'text/plain' }).end('x'.repeat(70_000));
+  });
+  const result = await client(google).invoke('gmail', 'create_draft', { message: { raw: 'x' } }, true);
+  assert.equal(result.status, 'unknown');
+  assert.equal(result.mayHaveCompleted, true);
+});
+
 test('a stalled mutation reports unknown once', async (t) => {
   const google = await server(t, async (_req, res) => {
     await new Promise((resolve) => setTimeout(resolve, 200));
     res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
   });
-  const result = await client(google, { timeoutMs: 30 }).invoke('gmail', 'create_draft', { message: {} }, true);
+  const result = await client(google, { timeoutMs: 30 }).invoke('gmail', 'create_draft', { message: { raw: 'x' } }, true);
   assert.equal(result.status, 'unknown');
 });

@@ -50,13 +50,17 @@ export class WorkspaceOAuth {
     const state = randomBytes(32).toString('base64url');
     const verifier = randomBytes(64).toString('base64url');
     const challenge = createHash('sha256').update(verifier).digest('base64url');
-    const available = options.selection
-      ? options.selection.map((item) => item.service)
-      : undefined;
+    const requested = options.selection ? [...options.selection] : undefined;
+    if (requested?.some((item) => item.service === 'universal')) {
+      for (const product of options.universalProducts ?? ['gmail', 'drive', 'calendar', 'chat'] as const) {
+        if (!requested.some((item) => item.service === product)) requested.push({ service: product, write: false });
+      }
+    }
+    const available = requested?.map((item) => item.service);
     const services = listServices().filter((service) => !available || available.includes(service.name));
     const selection: readonly ServiceSelection[] = services.map((service) => ({
       service: service.name,
-      write: service.writeAvailable && (options.selection?.find((item) => item.service === service.name)?.write ?? true),
+      write: service.writeAvailable && (requested?.find((item) => item.service === service.name)?.write ?? true),
     }));
     const open = options.openBrowser || openBrowser;
     const tokenEndpoint = options.tokenEndpoint || GOOGLE_TOKEN;

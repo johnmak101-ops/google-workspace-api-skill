@@ -156,7 +156,7 @@ var calendarOperations = [
   rest({ service: "calendar", name: "create_event", description: "Create a calendar event.", method: "POST", origin: origin3, path: "/calendar/v3/calendars/{calendarId}/events", readOnly: false, scopes: write2, inputSchema: schema({ calendarId: text, ...eventBody }, ["calendarId", "summary", "start", "end"]), pathParams: ["calendarId"], bodyParams: eventParams }),
   rest({ service: "calendar", name: "update_event", description: "Update a calendar event.", method: "PATCH", origin: origin3, path: "/calendar/v3/calendars/{calendarId}/events/{eventId}", readOnly: false, scopes: write2, inputSchema: schema({ calendarId: text, eventId: text, ...eventBody }, ["calendarId", "eventId"]), pathParams: ["calendarId", "eventId"], bodyParams: eventParams }),
   rest({ service: "calendar", name: "delete_event", description: "Delete a calendar event.", method: "DELETE", origin: origin3, path: "/calendar/v3/calendars/{calendarId}/events/{eventId}", readOnly: false, scopes: write2, inputSchema: schema({ calendarId: text, eventId: text }, ["calendarId", "eventId"]), pathParams: ["calendarId", "eventId"] }),
-  rest({ service: "calendar", name: "respond_to_event", description: "Set attendee response status on an event.", method: "PATCH", origin: origin3, path: "/calendar/v3/calendars/{calendarId}/events/{eventId}", readOnly: false, scopes: write2, inputSchema: schema({ calendarId: text, eventId: text, attendees: { type: "array", items: object } }, ["calendarId", "eventId", "attendees"]), pathParams: ["calendarId", "eventId"], bodyParams: ["attendees"] }),
+  rest({ service: "calendar", name: "respond_to_event", description: "Set only the current attendee response status while preserving all other attendees.", method: "PATCH", origin: origin3, path: "/calendar/v3/calendars/{calendarId}/events/{eventId}", readOnly: false, scopes: write2, inputSchema: schema({ calendarId: text, eventId: text, responseStatus: { type: "string", enum: ["accepted", "declined", "tentative", "needsAction"] } }, ["calendarId", "eventId", "responseStatus"]), pathParams: ["calendarId", "eventId"], bodyParams: ["responseStatus"] }),
   rest({ service: "calendar", name: "check_free_busy", description: "Check free/busy information for calendars.", method: "POST", origin: origin3, path: "/calendar/v3/freeBusy", readOnly: true, scopes: freeBusy, inputSchema: schema({ timeMin: text, timeMax: text, items: { type: "array", items: object } }, ["timeMin", "timeMax", "items"]), bodyParams: ["timeMin", "timeMax", "items"] })
 ];
 
@@ -456,7 +456,7 @@ function scopesFor(selection, options = {}) {
   const scopes = /* @__PURE__ */ new Set();
   for (const item of selection) {
     const service = getService(item.service);
-    const readScopes = service.name === "universal" && options.universalProducts ? options.universalProducts.map((product) => universalScopes[product]) : service.readScopes;
+    const readScopes = service.name === "universal" && options.universalProducts ? options.universalProducts.flatMap((product) => product === "chat" ? [universalScopes.chat, scope2("chat.spaces.readonly")] : [universalScopes[product]]) : service.readScopes;
     for (const value of readScopes) scopes.add(value);
     if (service.name === "people" && options.directoryAdmin) scopes.add(scope2("directory.readonly"));
     if (item.write) {
@@ -482,24 +482,42 @@ function schemaProperties(operation) {
   const properties = operation.inputSchema.properties;
   return properties !== null && typeof properties === "object" && !Array.isArray(properties) ? properties : {};
 }
-function schemaType(properties, name) {
-  const property = properties[name];
-  if (property === null || typeof property !== "object" || Array.isArray(property)) return void 0;
-  const type = property.type;
-  return typeof type === "string" ? type : void 0;
-}
 function requiredFields(operation) {
   const required2 = operation.inputSchema.required;
   const fields = Array.isArray(required2) ? required2.filter((value) => typeof value === "string") : [];
   return /* @__PURE__ */ new Set([...fields, ...Object.entries(operation.queryParams).filter(([, param]) => param.required).map(([name]) => name)]);
 }
-function validateJsonValue(name, value, type) {
+function validateSchema(name, value, schema2) {
   if (value === null) invalid(name, "non-null");
+  if (schema2 === null || typeof schema2 !== "object" || Array.isArray(schema2)) return;
+  const definition = schema2;
+  const type = definition.type;
   if (type === "string" && typeof value !== "string") invalid(name, "a string");
-  if ((type === "number" || type === "integer") && (typeof value !== "number" || !Number.isFinite(value))) invalid(name, "a finite number");
+  if (type === "number" && (typeof value !== "number" || !Number.isFinite(value))) invalid(name, "a finite number");
+  if (type === "integer" && (typeof value !== "number" || !Number.isInteger(value))) invalid(name, "an integer");
   if (type === "boolean" && typeof value !== "boolean") invalid(name, "a boolean");
-  if (type === "array" && !Array.isArray(value)) invalid(name, "an array");
-  if (type === "object" && (typeof value !== "object" || value === null || Array.isArray(value))) invalid(name, "an object");
+  if ((type === "number" || type === "integer") && typeof definition.minimum === "number" && value < definition.minimum) invalid(name, `at least ${definition.minimum}`);
+  if (type === "array") {
+    if (!Array.isArray(value)) invalid(name, "an array");
+    if (definition.items !== void 0) value.forEach((item, index) => validateSchema(`${name}[${index}]`, item, definition.items));
+  }
+  if (type === "object") {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) invalid(name, "an object");
+    const objectValue = value;
+    const properties = definition.properties !== null && typeof definition.properties === "object" && !Array.isArray(definition.properties) ? definition.properties : {};
+    const required2 = Array.isArray(definition.required) ? definition.required : [];
+    for (const field of required2) {
+      if (typeof field === "string" && objectValue[field] === void 0) throw new WorkspaceError("INVALID_ARGUMENT", `Missing required field: ${name}.${field}`);
+    }
+    if (definition.additionalProperties === false) {
+      for (const field of Object.keys(objectValue)) {
+        if (!(field in properties)) throw new WorkspaceError("INVALID_ARGUMENT", `Unknown field: ${name}.${field}`);
+      }
+    }
+    for (const [field, fieldValue] of Object.entries(objectValue)) {
+      if (field in properties) validateSchema(`${name}.${field}`, fieldValue, properties[field]);
+    }
+  }
 }
 function validateQueryValue(name, value, param) {
   if (param.type === "stringArray") {
@@ -520,23 +538,21 @@ function appendQuery(search, name, value, param) {
   }
   search.append(param.wireName, String(value));
 }
-function jsonBody(operation, args, properties) {
+function jsonBody(operation, args, metadataOnlyDrive) {
+  if (metadataOnlyDrive) return JSON.stringify(args.metadata ?? {});
   const body = {};
   for (const name of operation.bodyParams) {
-    const value = args[name];
-    if (value === void 0) continue;
-    validateJsonValue(name, value, schemaType(properties, name));
-    body[name] = value;
+    if (args[name] !== void 0) body[name] = args[name];
   }
   return JSON.stringify(body);
 }
-function multipartBody(args) {
+function multipartBody(args, properties) {
   const metadata2 = args.metadata ?? {};
-  validateJsonValue("metadata", metadata2, "object");
+  validateSchema("metadata", metadata2, properties.metadata);
   const encoded = args.contentBase64;
-  if (encoded !== void 0) validateJsonValue("contentBase64", encoded, "string");
+  if (encoded !== void 0) validateSchema("contentBase64", encoded, properties.contentBase64);
   const mimeType = args.mimeType ?? "application/octet-stream";
-  validateJsonValue("mimeType", mimeType, "string");
+  validateSchema("mimeType", mimeType, properties.mimeType);
   const boundary = "google-workspace-api-boundary";
   const content = encoded ?? "";
   const body = [
@@ -554,18 +570,29 @@ function multipartBody(args) {
   ].join("\r\n");
   return { body, contentType: `multipart/related; boundary=${boundary}` };
 }
+function isDriveMediaOperation(operation) {
+  return operation.service === "drive" && (operation.name === "create_file" || operation.name === "update_file");
+}
 function prepareRequest(operation, args) {
   if (operation.kind === "local") throw new WorkspaceError("LOCAL_OPERATION", `${operation.service}.${operation.name} is a local operation.`);
   const properties = schemaProperties(operation);
   const allowed = /* @__PURE__ */ new Set([...operation.pathParams, ...Object.keys(operation.queryParams), ...operation.bodyParams]);
-  for (const name of Object.keys(args)) {
+  for (const [name, value] of Object.entries(args)) {
     if (!allowed.has(name)) throw new WorkspaceError("INVALID_ARGUMENT", `Unknown argument for ${operation.name}: ${name}`);
-    if (args[name] === null) invalid(name, "non-null");
+    if (value === null) invalid(name, "non-null");
+    if (properties[name] !== void 0) validateSchema(name, value, properties[name]);
   }
   for (const name of requiredFields(operation)) {
     if (args[name] === void 0) throw new WorkspaceError("INVALID_ARGUMENT", `Missing required argument for ${operation.name}: ${name}`);
   }
-  const path7 = operation.path.replace(/\{([^}]+)\}/g, (_match, name) => {
+  const mediaOperation = isDriveMediaOperation(operation);
+  const hasMediaContent = mediaOperation && args.contentBase64 !== void 0;
+  const metadataOnlyDrive = mediaOperation && !hasMediaContent;
+  if (mediaOperation && args.uploadType !== void 0 && (metadataOnlyDrive || args.uploadType !== "multipart")) {
+    throw new WorkspaceError("INVALID_ARGUMENT", "uploadType is determined by the presence of contentBase64.");
+  }
+  const operationPath = metadataOnlyDrive ? operation.path.replace("/upload/", "/") : operation.path;
+  const path7 = operationPath.replace(/\{([^}]+)\}/g, (_match, name) => {
     if (!operation.pathParams.includes(name)) throw new WorkspaceError("INVALID_OPERATION", `Undeclared path parameter: ${name}`);
     const value = args[name];
     if (typeof value !== "string" && typeof value !== "number") invalid(name, "a string or number");
@@ -574,17 +601,19 @@ function prepareRequest(operation, args) {
   const url = new URL(path7, operation.origin);
   if (url.origin !== operation.origin) throw new WorkspaceError("INVALID_OPERATION", "Operation origin mismatch.");
   for (const [name, param] of Object.entries(operation.queryParams)) {
+    if (metadataOnlyDrive && name === "uploadType") continue;
     const value = args[name] ?? param.defaultValue;
     if (value !== void 0) appendQuery(url.searchParams, name, value, param);
   }
   const headers = { accept: "application/json" };
-  if (operation.bodyKind === "none") return { url: url.toString(), method: operation.method, headers };
-  if (operation.bodyKind === "json") {
-    const body = jsonBody(operation, args, properties);
+  const bodyKind = metadataOnlyDrive ? "json" : operation.bodyKind;
+  if (bodyKind === "none") return { url: url.toString(), method: operation.method, headers };
+  if (bodyKind === "json") {
+    const body = jsonBody(operation, args, metadataOnlyDrive);
     if (Buffer.byteLength(body) > MAX_BODY_BYTES) throw new WorkspaceError("ARGS_TOO_LARGE", "Request body must not exceed 1 MB.");
     return { url: url.toString(), method: operation.method, headers: { ...headers, "content-type": "application/json" }, body };
   }
-  const multipart = multipartBody(args);
+  const multipart = multipartBody(args, properties);
   if (Buffer.byteLength(multipart.body) > MAX_BODY_BYTES) throw new WorkspaceError("ARGS_TOO_LARGE", "Request body must not exceed 1 MB.");
   return { url: url.toString(), method: operation.method, headers: { ...headers, "content-type": multipart.contentType }, body: multipart.body };
 }
@@ -646,11 +675,29 @@ var GoogleApiClient = class {
     this.maxJsonBytes = options.maxJsonBytes ?? 5e6;
     this.maxBinaryBytes = options.maxBinaryBytes ?? 1e8;
   }
+  async respondToEvent(args) {
+    prepareRequest(getOperation("calendar", "respond_to_event"), args);
+    const event = await this.invoke("calendar", "get_event", { calendarId: args.calendarId, eventId: args.eventId }, false);
+    if (event === null || typeof event !== "object" || Array.isArray(event)) throw new WorkspaceError("EVENT_RESPONSE", "Calendar event response is invalid.");
+    const attendees = event.attendees;
+    if (!Array.isArray(attendees)) throw new WorkspaceError("ATTENDEE_NOT_FOUND", "The current user is not an attendee on this event.");
+    let found = false;
+    const updated = attendees.map((attendee) => {
+      if (attendee !== null && typeof attendee === "object" && !Array.isArray(attendee) && attendee.self === true) {
+        found = true;
+        return { ...attendee, responseStatus: args.responseStatus };
+      }
+      return attendee;
+    });
+    if (!found) throw new WorkspaceError("ATTENDEE_NOT_FOUND", "The current user is not an attendee on this event.");
+    return this.invoke("calendar", "update_event", { calendarId: args.calendarId, eventId: args.eventId, attendees: updated }, true);
+  }
   async invoke(service, name, args, mutation) {
     const operation = getOperation(service, name);
     if (operation.kind === "local") throw new WorkspaceError("LOCAL_OPERATION", `${service}.${name} requires local dispatch.`);
     if (mutation && operation.readOnly) throw new WorkspaceError("READ_ONLY_REQUIRED", `${name} is read-only. Use call.`);
     if (!mutation && !operation.readOnly) throw new WorkspaceError("MUTATION_REQUIRED", `${name} is a mutation. Use mutate after user confirmation.`);
+    if (service === "calendar" && name === "respond_to_event") return this.respondToEvent(args);
     const request = prepareRequest(operation, args);
     const signal = AbortSignal.timeout(this.timeoutMs);
     let token = await this.getAccessToken(service, signal);
@@ -672,8 +719,14 @@ var GoogleApiClient = class {
           continue;
         }
         if (!response.ok) {
-          const body = await readLimitedText(response, 65536);
-          throw new ApiError(response.status, googleMessage(body, response.status));
+          let message;
+          try {
+            message = googleMessage(await readLimitedText(response, 65536), response.status);
+          } catch (error) {
+            if (!(error instanceof WorkspaceError) || error.code !== "RESPONSE_TOO_LARGE") throw error;
+            message = `Google API returned HTTP ${response.status} with an oversized error response.`;
+          }
+          throw new ApiError(response.status, message);
         }
         if (operation.binaryResponse) {
           if (!this.resultStore) throw new WorkspaceError("RESULT_STORE_REQUIRED", "Binary results require a result store.");
@@ -824,11 +877,17 @@ var WorkspaceOAuth = class {
     const state = (0, import_node_crypto.randomBytes)(32).toString("base64url");
     const verifier = (0, import_node_crypto.randomBytes)(64).toString("base64url");
     const challenge = (0, import_node_crypto.createHash)("sha256").update(verifier).digest("base64url");
-    const available = options.selection ? options.selection.map((item) => item.service) : void 0;
+    const requested = options.selection ? [...options.selection] : void 0;
+    if (requested?.some((item) => item.service === "universal")) {
+      for (const product of options.universalProducts ?? ["gmail", "drive", "calendar", "chat"]) {
+        if (!requested.some((item) => item.service === product)) requested.push({ service: product, write: false });
+      }
+    }
+    const available = requested?.map((item) => item.service);
     const services2 = listServices().filter((service) => !available || available.includes(service.name));
     const selection = services2.map((service) => ({
       service: service.name,
-      write: service.writeAvailable && (options.selection?.find((item) => item.service === service.name)?.write ?? true)
+      write: service.writeAvailable && (requested?.find((item) => item.service === service.name)?.write ?? true)
     }));
     const open = options.openBrowser || openBrowser;
     const tokenEndpoint = options.tokenEndpoint || GOOGLE_TOKEN;
