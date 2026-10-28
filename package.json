@@ -1,0 +1,21 @@
+{
+  "name": "google-workspace-api-skill",
+  "version": "0.1.0",
+  "description": "Local Google Workspace API skill for Kimi Code, Claude Code, and OpenPave",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": "24.22.x"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && npm run bundle",
+    "bundle": "esbuild src/cli.ts --bundle --platform=node --target=node24.22 --format=cjs --outfile=dist/cli.js",
+    "pretest": "npm run build",
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
+  }
+}
