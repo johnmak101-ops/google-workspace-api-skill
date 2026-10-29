@@ -2,6 +2,8 @@
 
 Complete this setup once. Everyday authentication is one `auth` command followed by Google's consent screen.
 
+For a project that must serve accounts outside one organization, use [public setup](public-setup.md) instead. It covers the External consent screen, the test-user list, and why an Internal screen blocks outside accounts.
+
 ## 1. Install Node
 
 Install Node 24.22.1 on Windows, macOS, or Linux and verify `node --version`. OpenPave can run its own process on another version, but the skill child process must use this Node version. Set `PAVE_NODE_BIN` when necessary.
@@ -22,7 +24,15 @@ For Chat, complete Google's Chat app configuration. Directory search requires an
 
 ## 3. Configure local credentials
 
-Set `GOOGLE_OAUTH_CLIENT_ID`. Store the client secret in an owner-only file outside this repository and set `GOOGLE_OAUTH_CLIENT_SECRET_FILE` to its path. The file can contain only the secret or the downloaded client JSON. `GOOGLE_OAUTH_CLIENT_SECRET` also works on hosts that pass it to child processes; OpenPave users should use the file option.
+Install the downloaded Desktop client JSON in one command:
+
+```bash
+node "<skill-dir>/dist/cli.js" setup --client-secret-file "<downloads>/client_secret_<project>.apps.googleusercontent.com.json"
+```
+
+`setup` writes `config.json` owner-only to the credential home (`WORKSPACE_API_HOME`, default `~/.google-workspace-api`), so no environment variables are needed afterwards. It rejects Web application clients with `CLIENT_TYPE`, refuses to overwrite without `--force`, and accepts `--redirect-uri`.
+
+Environment variables still take precedence when a host injects them. Set `GOOGLE_OAUTH_CLIENT_ID` and either `GOOGLE_OAUTH_CLIENT_SECRET_FILE` (owner-only file containing only the secret or the downloaded client JSON) or `GOOGLE_OAUTH_CLIENT_SECRET` on hosts that pass environment to child processes; OpenPave users should use the file option or `setup`.
 
 Optional settings:
 
@@ -54,3 +64,11 @@ node "<skill-dir>/dist/cli.js" auth
 The command opens Google's consent UI directly, without a local selection page. Google controls whether scopes have checkboxes or another presentation. Without flags, Read and Write scopes are requested for all registered services except read-only services. Use `--services` or `--read-only` to restrict the request.
 
 Google may grant only part of the request. The CLI stores actual granted scopes and reports partial authorization. Refresh-token expiry or revocation requires another `auth` run.
+
+Then check which product APIs actually answer:
+
+```bash
+node "<skill-dir>/dist/cli.js" doctor --json
+```
+
+Each service reports `enabled`, `disabled` with an enable URL, `unauthorized`, `forbidden`, or `error`. A product whose API is off in the Cloud project fails here even when authorization succeeded.

@@ -11,8 +11,9 @@ test('credential home is independent and configurable', () => {
 });
 
 test('missing OAuth configuration reports variable names without secret values', async () => {
-  await assert.rejects(loadOAuthConfig({}), /GOOGLE_OAUTH_CLIENT_ID/);
-  await assert.rejects(loadOAuthConfig({ GOOGLE_OAUTH_CLIENT_ID: 'client-id' }), /GOOGLE_OAUTH_CLIENT_SECRET/);
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-config-'));
+  await assert.rejects(loadOAuthConfig({ WORKSPACE_API_HOME: empty }), /GOOGLE_OAUTH_CLIENT_ID/);
+  await assert.rejects(loadOAuthConfig({ GOOGLE_OAUTH_CLIENT_ID: 'client-id', WORKSPACE_API_HOME: empty }), /setup|GOOGLE_OAUTH_CLIENT_SECRET/);
 });
 
 test('OAuth configuration reads a secret file and validates loopback redirect', async () => {

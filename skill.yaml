@@ -27,6 +27,18 @@ usage_notes: |
   Use protected argument files or stdin, never inline --args.
 
 commands:
+  - name: setup
+    description: Install a downloaded Desktop app OAuth client into the credential home
+    options:
+      - --client-secret-file <path>
+      - --client-id <id>
+      - --redirect-uri <uri>
+      - --force
+      - --json
+  - name: doctor
+    description: Probe each service and report API enablement and authorization state
+    options:
+      - --json
   - name: services
     description: List supported services and local authorization metadata
     options:

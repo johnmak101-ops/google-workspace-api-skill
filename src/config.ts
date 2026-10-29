@@ -10,13 +10,22 @@ export interface OAuthConfig {
   readonly homeDir: string;
 }
 
+export interface StoredConfig {
+  readonly clientId?: string;
+  readonly clientSecret?: string;
+  readonly clientSecretFile?: string;
+  readonly redirectUri?: string;
+}
+
+export const CONFIG_FILE = 'config.json';
+
 function required(value: string | undefined, name: string): string {
   const trimmed = value?.trim();
   if (!trimmed) throw new WorkspaceError('MISSING_CONFIG', `Missing ${name}. See references/setup.md.`);
   return trimmed;
 }
 
-function validateRedirectUri(value: string | undefined): string {
+export function validateRedirectUri(value: string | undefined): string {
   const redirect = value || 'http://localhost:8080/callback';
   let url: URL;
   try {
@@ -36,9 +45,11 @@ export function resolveHomeDir(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 export async function loadOAuthConfig(env: NodeJS.ProcessEnv = process.env): Promise<OAuthConfig> {
-  const clientId = required(env.GOOGLE_OAUTH_CLIENT_ID, 'GOOGLE_OAUTH_CLIENT_ID');
-  let clientSecret = env.GOOGLE_OAUTH_CLIENT_SECRET?.trim();
-  const secretFile = env.GOOGLE_OAUTH_CLIENT_SECRET_FILE?.trim();
+  const homeDir = resolveHomeDir(env);
+  const stored = await readStoredConfig(homeDir);
+  const clientId = required(env.GOOGLE_OAUTH_CLIENT_ID?.trim() || stored.clientId, 'GOOGLE_OAUTH_CLIENT_ID');
+  let clientSecret = env.GOOGLE_OAUTH_CLIENT_SECRET?.trim() || stored.clientSecret;
+  const secretFile = env.GOOGLE_OAUTH_CLIENT_SECRET_FILE?.trim() || (clientSecret ? undefined : stored.clientSecretFile);
   if (!clientSecret && secretFile) {
     const raw = (await fs.readFile(secretFile, 'utf8')).trim();
     if (raw.startsWith('{')) {
@@ -53,13 +64,47 @@ export async function loadOAuthConfig(env: NodeJS.ProcessEnv = process.env): Pro
     }
   }
   if (!clientSecret) {
-    throw new WorkspaceError('MISSING_CONFIG', 'Missing GOOGLE_OAUTH_CLIENT_SECRET or GOOGLE_OAUTH_CLIENT_SECRET_FILE. See references/setup.md.');
+    throw new WorkspaceError('MISSING_CONFIG', 'Missing OAuth credentials. Run: node dist/cli.js setup --client-secret-file <downloaded client JSON>. See references/public-setup.md.');
   }
   return {
     clientId,
     clientSecret,
-    redirectUri: validateRedirectUri(env.GOOGLE_OAUTH_REDIRECT_URI),
-    homeDir: resolveHomeDir(env),
+    redirectUri: validateRedirectUri(env.GOOGLE_OAUTH_REDIRECT_URI || stored.redirectUri),
+    homeDir,
+  };
+}
+
+function text(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+export async function readStoredConfig(homeDir: string): Promise<StoredConfig> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(path.join(homeDir, CONFIG_FILE), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    throw new WorkspaceError('INVALID_CONFIG', `Cannot read ${CONFIG_FILE} in the credential directory.`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new WorkspaceError('INVALID_CONFIG', `${CONFIG_FILE} is not valid JSON. Run setup again.`);
+  }
+  if (parsed === null || Array.isArray(parsed) || typeof parsed !== 'object') {
+    throw new WorkspaceError('INVALID_CONFIG', `${CONFIG_FILE} must be a JSON object. Run setup again.`);
+  }
+  const record = parsed as Record<string, unknown>;
+  const clientId = text(record.clientId);
+  const clientSecret = text(record.clientSecret);
+  const clientSecretFile = text(record.clientSecretFile);
+  const redirectUri = text(record.redirectUri);
+  return {
+    ...(clientId ? { clientId } : {}),
+    ...(clientSecret ? { clientSecret } : {}),
+    ...(clientSecretFile ? { clientSecretFile } : {}),
+    ...(redirectUri ? { redirectUri } : {}),
   };
 }
 

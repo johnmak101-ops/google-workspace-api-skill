@@ -31,6 +31,20 @@ See [the OAuth and installation guide](references/setup.md) for:
 - Ordinary product API enablement and consent-screen configuration.
 - Local client-secret storage and host-specific installation.
 
+For accounts outside one organization, see [public setup](references/public-setup.md). It explains the External consent screen, the test-user list, why an Internal screen rejects outside accounts, and what publishing with restricted scopes requires.
+
+Install the downloaded Desktop client JSON in one command, then verify:
+
+```bash
+node "<skill-dir>/dist/cli.js" setup --client-secret-file "<downloads>/client_secret_<project>.apps.googleusercontent.com.json"
+node "<skill-dir>/dist/cli.js" auth --read-only
+node "<skill-dir>/dist/cli.js" doctor --json
+```
+
+`setup` writes an owner-only `config.json` in the credential home, so no environment variables are needed. `doctor` probes each service and reports `enabled`, `disabled` with an enable URL, `unauthorized`, `forbidden`, or `error`.
+
+From an agent or any non-interactive shell, `auth --window` opens the terminal that Google's consent flow needs, then poll `auth-status --json` until the grant appears. The full sequence, including its failure matrix, is in [the agent playbook](references/agent-playbook.md); the turn-by-turn Console walkthrough is in [the console setup guide](references/console-setup-guide.md).
+
 See [workflows](references/workflows.md) for read, mutation, federated-search, and account-restriction examples.
 
 ## Verification
