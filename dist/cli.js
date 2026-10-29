@@ -33,8 +33,8 @@ __export(cli_exports, {
   runCli: () => runCli
 });
 module.exports = __toCommonJS(cli_exports);
-var import_node_fs6 = require("node:fs");
-var import_node_path6 = __toESM(require("node:path"));
+var import_node_fs7 = require("node:fs");
+var import_node_path7 = __toESM(require("node:path"));
 
 // src/api-error.ts
 var ApiError = class extends Error {
@@ -592,13 +592,13 @@ function prepareRequest(operation, args) {
     throw new WorkspaceError("INVALID_ARGUMENT", "uploadType is determined by the presence of contentBase64.");
   }
   const operationPath = metadataOnlyDrive ? operation.path.replace("/upload/", "/") : operation.path;
-  const path7 = operationPath.replace(/\{([^}]+)\}/g, (_match, name) => {
+  const path8 = operationPath.replace(/\{([^}]+)\}/g, (_match, name) => {
     if (!operation.pathParams.includes(name)) throw new WorkspaceError("INVALID_OPERATION", `Undeclared path parameter: ${name}`);
     const value = args[name];
     if (typeof value !== "string" && typeof value !== "number") invalid(name, "a string or number");
     return encodeURIComponent(String(value));
   });
-  const url = new URL(path7, operation.origin);
+  const url = new URL(path8, operation.origin);
   if (url.origin !== operation.origin) throw new WorkspaceError("INVALID_OPERATION", "Operation origin mismatch.");
   for (const [name, param] of Object.entries(operation.queryParams)) {
     if (metadataOnlyDrive && name === "uploadType") continue;
@@ -748,6 +748,7 @@ var GoogleApiClient = class {
 var import_node_fs = require("node:fs");
 var import_node_os = __toESM(require("node:os"));
 var import_node_path = __toESM(require("node:path"));
+var CONFIG_FILE = "config.json";
 function required(value, name) {
   const trimmed = value?.trim();
   if (!trimmed) throw new WorkspaceError("MISSING_CONFIG", `Missing ${name}. See references/setup.md.`);
@@ -771,9 +772,11 @@ function resolveHomeDir(env = process.env) {
   return env.WORKSPACE_API_HOME?.trim() || import_node_path.default.join(import_node_os.default.homedir(), ".google-workspace-api");
 }
 async function loadOAuthConfig(env = process.env) {
-  const clientId = required(env.GOOGLE_OAUTH_CLIENT_ID, "GOOGLE_OAUTH_CLIENT_ID");
-  let clientSecret = env.GOOGLE_OAUTH_CLIENT_SECRET?.trim();
-  const secretFile = env.GOOGLE_OAUTH_CLIENT_SECRET_FILE?.trim();
+  const homeDir = resolveHomeDir(env);
+  const stored = await readStoredConfig(homeDir);
+  const clientId = required(env.GOOGLE_OAUTH_CLIENT_ID?.trim() || stored.clientId, "GOOGLE_OAUTH_CLIENT_ID");
+  let clientSecret = env.GOOGLE_OAUTH_CLIENT_SECRET?.trim() || stored.clientSecret;
+  const secretFile = env.GOOGLE_OAUTH_CLIENT_SECRET_FILE?.trim() || (clientSecret ? void 0 : stored.clientSecretFile);
   if (!clientSecret && secretFile) {
     const raw = (await import_node_fs.promises.readFile(secretFile, "utf8")).trim();
     if (raw.startsWith("{")) {
@@ -788,13 +791,45 @@ async function loadOAuthConfig(env = process.env) {
     }
   }
   if (!clientSecret) {
-    throw new WorkspaceError("MISSING_CONFIG", "Missing GOOGLE_OAUTH_CLIENT_SECRET or GOOGLE_OAUTH_CLIENT_SECRET_FILE. See references/setup.md.");
+    throw new WorkspaceError("MISSING_CONFIG", "Missing OAuth credentials. Run: node dist/cli.js setup --client-secret-file <downloaded client JSON>. See references/public-setup.md.");
   }
   return {
     clientId,
     clientSecret,
-    redirectUri: validateRedirectUri(env.GOOGLE_OAUTH_REDIRECT_URI),
-    homeDir: resolveHomeDir(env)
+    redirectUri: validateRedirectUri(env.GOOGLE_OAUTH_REDIRECT_URI || stored.redirectUri),
+    homeDir
+  };
+}
+function text2(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : void 0;
+}
+async function readStoredConfig(homeDir) {
+  let raw;
+  try {
+    raw = await import_node_fs.promises.readFile(import_node_path.default.join(homeDir, CONFIG_FILE), "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return {};
+    throw new WorkspaceError("INVALID_CONFIG", `Cannot read ${CONFIG_FILE} in the credential directory.`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new WorkspaceError("INVALID_CONFIG", `${CONFIG_FILE} is not valid JSON. Run setup again.`);
+  }
+  if (parsed === null || Array.isArray(parsed) || typeof parsed !== "object") {
+    throw new WorkspaceError("INVALID_CONFIG", `${CONFIG_FILE} must be a JSON object. Run setup again.`);
+  }
+  const record = parsed;
+  const clientId = text2(record.clientId);
+  const clientSecret = text2(record.clientSecret);
+  const clientSecretFile = text2(record.clientSecretFile);
+  const redirectUri = text2(record.redirectUri);
+  return {
+    ...clientId ? { clientId } : {},
+    ...clientSecret ? { clientSecret } : {},
+    ...clientSecretFile ? { clientSecretFile } : {},
+    ...redirectUri ? { redirectUri } : {}
   };
 }
 function assertNodeVersion(version = process.versions.node) {
@@ -816,10 +851,88 @@ function parseJsonObject(input) {
   return value;
 }
 
+// src/doctor.ts
+var PROBES = [
+  { service: "gmail", tool: "list_labels", args: {} },
+  { service: "drive", tool: "list_recent_files", args: {} },
+  { service: "calendar", tool: "list_calendars", args: {} },
+  { service: "people", tool: "get_user_profile", args: { personFields: ["names"] } },
+  { service: "tasks", tool: "list_task_lists", args: {} },
+  { service: "chat", tool: "list_spaces", args: {} },
+  { service: "classroom", tool: "list_courses", args: {} }
+];
+var SKIPPED = [
+  { service: "docs", reason: "Needs a document ID. Run tools docs, then call docs read_doc." },
+  { service: "sheets", reason: "Needs a spreadsheet ID. Run tools sheets, then call sheets get_spreadsheet." },
+  { service: "slides", reason: "Needs a presentation ID. Run tools slides, then call slides read_presentation." },
+  { service: "forms", reason: "Needs a form ID. Run tools forms, then call forms get_form." },
+  { service: "appscript", reason: "Needs a script ID. Run tools appscript, then call appscript get_project." }
+];
+var ENABLE_URL = /https:\/\/console\.developers\.google\.com\/apis\/api\/\S+/;
+function classify(error) {
+  const message = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim().slice(0, 300);
+  const record = error;
+  const code = typeof record?.code === "string" ? record.code : void 0;
+  const status = typeof record?.status === "number" ? record.status : void 0;
+  if (code === "AUTH_REQUIRED" || status === 401) return { status: "unauthorized", detail: message };
+  if (status === 403 && /has not been used in project|is disabled/i.test(message)) {
+    const enableUrl = ENABLE_URL.exec(message)?.[0];
+    return { status: "disabled", detail: message, ...enableUrl ? { enableUrl } : {} };
+  }
+  if (status === 403) return { status: "forbidden", detail: message };
+  return { status: "error", detail: message };
+}
+async function runDoctor(invoke) {
+  const checks = [];
+  for (const probe of PROBES) {
+    try {
+      await invoke(probe.service, probe.tool, probe.args);
+      checks.push({ service: probe.service, status: "enabled" });
+    } catch (error) {
+      checks.push({ service: probe.service, ...classify(error) });
+    }
+  }
+  return { checks, skipped: SKIPPED };
+}
+
+// src/launch.ts
+var import_node_child_process = require("node:child_process");
+function quote(value) {
+  return /[\s"]/.test(value) ? `"${value.replace(/"/g, '\\"')}"` : value;
+}
+function waitForSpawn(child) {
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("spawn", () => resolve());
+  });
+}
+async function launchAuthWindow(argv) {
+  const cli = process.argv[1];
+  if (!cli) throw new WorkspaceError("LAUNCH_FAILED", "Cannot locate the CLI entry point to relaunch.");
+  const node = process.execPath;
+  const command = [node, cli, ...argv].map(quote).join(" ");
+  let child;
+  if (process.platform === "win32") {
+    child = (0, import_node_child_process.spawn)("cmd.exe", ["/d", "/c", "start", "", node, cli, ...argv], { detached: true, stdio: "ignore", windowsHide: false });
+  } else if (process.platform === "darwin") {
+    const script = `tell application "Terminal" to do script ${JSON.stringify(command)}`;
+    child = (0, import_node_child_process.spawn)("osascript", ["-e", script], { detached: true, stdio: "ignore" });
+  } else {
+    child = (0, import_node_child_process.spawn)(process.env.TERMINAL || "x-terminal-emulator", ["-e", node, cli, ...argv], { detached: true, stdio: "ignore" });
+  }
+  try {
+    await waitForSpawn(child);
+  } catch (error) {
+    throw new WorkspaceError("LAUNCH_FAILED", `Could not open a terminal window. Run this yourself: ${command}`);
+  }
+  child.unref();
+  return { command, ...child.pid ? { pid: child.pid } : {} };
+}
+
 // src/oauth.ts
 var import_node_crypto = require("node:crypto");
 var import_node_fs2 = require("node:fs");
-var import_node_child_process = require("node:child_process");
+var import_node_child_process2 = require("node:child_process");
 var import_node_http = __toESM(require("node:http"));
 var import_node_path2 = __toESM(require("node:path"));
 
@@ -856,7 +969,7 @@ function openBrowser(url) {
   if (!(0, import_node_fs2.existsSync)(command)) throw new WorkspaceError("BROWSER_UNAVAILABLE", `Browser launcher not found: ${command}`);
   const args = process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url];
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/(SECRET|TOKEN|CREDENTIAL|PASSWORD|API_KEY)/i.test(key)));
-  const child = (0, import_node_child_process.spawn)(command, args, { detached: true, stdio: "ignore", windowsHide: true, env });
+  const child = (0, import_node_child_process2.spawn)(command, args, { detached: true, stdio: "ignore", windowsHide: true, env });
   child.on("error", (error) => process.stderr.write(`Browser launcher failed: ${error.message}
 `));
   child.unref();
@@ -1030,9 +1143,9 @@ function makeEnvelope(data) {
   };
 }
 function preview(value, limit = 2048) {
-  const text2 = (typeof value === "string" ? value : JSON.stringify(value)) ?? String(value);
-  const buffer = Buffer.from(text2, "utf8");
-  return buffer.length <= limit ? text2 : buffer.subarray(0, limit).toString("utf8");
+  const text3 = (typeof value === "string" ? value : JSON.stringify(value)) ?? String(value);
+  const buffer = Buffer.from(text3, "utf8");
+  return buffer.length <= limit ? text3 : buffer.subarray(0, limit).toString("utf8");
 }
 function sanitizeValue(value) {
   if (typeof value === "string") return redactError(value);
@@ -1123,12 +1236,12 @@ var import_node_fs4 = require("node:fs");
 var import_node_path4 = __toESM(require("node:path"));
 
 // src/secure-fs.ts
-var import_node_child_process2 = require("node:child_process");
+var import_node_child_process3 = require("node:child_process");
 var import_node_fs3 = require("node:fs");
 var import_node_path3 = __toESM(require("node:path"));
 var import_promises = require("node:timers/promises");
 var import_node_util = require("node:util");
-var execFileAsync = (0, import_node_util.promisify)(import_node_child_process2.execFile);
+var execFileAsync = (0, import_node_util.promisify)(import_node_child_process3.execFile);
 var verifiedDirectories = /* @__PURE__ */ new Set();
 async function protectWindows(target, directory2) {
   const systemRoot = process.env.SystemRoot || "C:\\Windows";
@@ -1197,10 +1310,10 @@ var ResultStore = class {
     this.directory = directory2;
   }
   directory;
-  async saveText(text2, mimeType) {
+  async saveText(text3, mimeType) {
     const file = import_node_path4.default.join(this.directory, `${(0, import_node_crypto2.randomUUID)()}.txt`);
-    await atomicWriteSecure(file, text2);
-    return { path: file, mimeType, size: Buffer.byteLength(text2, "utf8") };
+    await atomicWriteSecure(file, text3);
+    return { path: file, mimeType, size: Buffer.byteLength(text3, "utf8") };
   }
   async saveBytes(bytes, mimeType) {
     await secureDirectory(this.directory);
@@ -1232,10 +1345,66 @@ var ResultStore = class {
   }
 };
 
-// src/token-store.ts
-var import_node_crypto3 = require("node:crypto");
+// src/setup.ts
 var import_node_fs5 = require("node:fs");
 var import_node_path5 = __toESM(require("node:path"));
+function parseClientCredentials(raw, fallbackClientId) {
+  const value = raw.trim();
+  if (!value) throw new WorkspaceError("INVALID_CLIENT_FILE", "The client secret file is empty.");
+  if (!value.startsWith("{")) {
+    if (!fallbackClientId?.trim()) {
+      throw new WorkspaceError("INVALID_CLIENT_FILE", "A raw client secret needs --client-id. Pass the downloaded Desktop app JSON instead.");
+    }
+    return { clientId: fallbackClientId.trim(), clientSecret: value };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new WorkspaceError("INVALID_CLIENT_FILE", "The client secret file is not valid JSON.");
+  }
+  if (parsed === null || Array.isArray(parsed) || typeof parsed !== "object") {
+    throw new WorkspaceError("INVALID_CLIENT_FILE", "The client secret file must contain a JSON object.");
+  }
+  const record = parsed;
+  if (!record.installed && record.web) {
+    throw new WorkspaceError("CLIENT_TYPE", "This is a Web application OAuth client. Create a Desktop app client: the loopback flow does not need a shared web secret.");
+  }
+  const block = record.installed ?? record;
+  const clientId = typeof block.client_id === "string" ? block.client_id.trim() : "";
+  const clientSecret = typeof block.client_secret === "string" ? block.client_secret.trim() : "";
+  if (!clientId || !clientSecret) {
+    throw new WorkspaceError("INVALID_CLIENT_FILE", "The client secret file is missing client_id or client_secret.");
+  }
+  return { clientId, clientSecret };
+}
+async function runSetup(env, options) {
+  const homeDir = resolveHomeDir(env);
+  const configPath = import_node_path5.default.join(homeDir, CONFIG_FILE);
+  const file = options.clientSecretFile?.trim();
+  if (!file) {
+    throw new WorkspaceError("USAGE", "Usage: setup --client-secret-file <downloaded-desktop-client.json> [--redirect-uri <uri>] [--force]");
+  }
+  const redirectUri = validateRedirectUri(options.redirectUri?.trim() || env.GOOGLE_OAUTH_REDIRECT_URI);
+  let exists = true;
+  try {
+    await import_node_fs5.promises.access(configPath);
+  } catch {
+    exists = false;
+  }
+  if (exists && !options.force) {
+    throw new WorkspaceError("CONFIG_EXISTS", `Configuration already exists at ${configPath}. Use --force to replace it.`);
+  }
+  const credentials = parseClientCredentials(await import_node_fs5.promises.readFile(file, "utf8"), options.clientId);
+  await atomicWriteSecure(configPath, `${JSON.stringify({ ...credentials, redirectUri }, null, 2)}
+`);
+  return { configPath, clientId: credentials.clientId, clientType: "installed", redirectUri };
+}
+
+// src/token-store.ts
+var import_node_crypto3 = require("node:crypto");
+var import_node_fs6 = require("node:fs");
+var import_node_path6 = __toESM(require("node:path"));
 var import_promises2 = require("node:timers/promises");
 function isTokenRecord(value) {
   if (value === null || typeof value !== "object") return false;
@@ -1249,15 +1418,15 @@ var TokenStore = class {
   tokensDir;
   locksDir;
   constructor(homeDir) {
-    this.tokensDir = import_node_path5.default.join(homeDir, "tokens");
-    this.locksDir = import_node_path5.default.join(homeDir, "locks");
+    this.tokensDir = import_node_path6.default.join(homeDir, "tokens");
+    this.locksDir = import_node_path6.default.join(homeDir, "locks");
   }
   file(service) {
-    return import_node_path5.default.join(this.tokensDir, `${service}.json`);
+    return import_node_path6.default.join(this.tokensDir, `${service}.json`);
   }
   async read(service) {
     try {
-      const parsed = JSON.parse(await import_node_fs5.promises.readFile(this.file(service), "utf8"));
+      const parsed = JSON.parse(await import_node_fs6.promises.readFile(this.file(service), "utf8"));
       if (!isTokenRecord(parsed)) throw new WorkspaceError("TOKEN_INVALID", `Stored ${service} credentials are invalid. Reauthenticate.`);
       return parsed;
     } catch (error) {
@@ -1301,7 +1470,7 @@ var TokenStore = class {
     if (service) {
       for (let attempt = 0; attempt < 5; attempt += 1) {
         try {
-          await import_node_fs5.promises.rm(this.file(service), { force: true });
+          await import_node_fs6.promises.rm(this.file(service), { force: true });
           return;
         } catch (error) {
           if (process.platform !== "win32" || error.code !== "EPERM" || attempt === 4) throw error;
@@ -1310,12 +1479,12 @@ var TokenStore = class {
       }
       return;
     }
-    await import_node_fs5.promises.rm(this.tokensDir, { recursive: true, force: true });
+    await import_node_fs6.promises.rm(this.tokensDir, { recursive: true, force: true });
   }
   async status() {
     let names;
     try {
-      names = await import_node_fs5.promises.readdir(this.tokensDir);
+      names = await import_node_fs6.promises.readdir(this.tokensDir);
     } catch (error) {
       if (error.code === "ENOENT") return [];
       throw error;
@@ -1339,19 +1508,19 @@ var TokenStore = class {
   }
   async withLock(key, operation) {
     await secureDirectory(this.locksDir);
-    const lock = import_node_path5.default.join(this.locksDir, `${key}.lock`);
+    const lock = import_node_path6.default.join(this.locksDir, `${key}.lock`);
     const deadline = Date.now() + 1e4;
     while (true) {
       let handle;
       try {
-        handle = await import_node_fs5.promises.open(lock, "wx", 384);
+        handle = await import_node_fs6.promises.open(lock, "wx", 384);
       } catch (error) {
         const code = error.code;
         const contention = code === "EEXIST" || process.platform === "win32" && code === "EPERM";
         if (!contention) throw error;
         try {
-          const stat = await import_node_fs5.promises.stat(lock);
-          if (Date.now() - stat.mtimeMs > 3e4) await import_node_fs5.promises.rm(lock, { force: true });
+          const stat = await import_node_fs6.promises.stat(lock);
+          if (Date.now() - stat.mtimeMs > 3e4) await import_node_fs6.promises.rm(lock, { force: true });
         } catch (statError) {
           if (statError.code !== "ENOENT") throw statError;
         }
@@ -1362,7 +1531,7 @@ var TokenStore = class {
       const nonce = (0, import_node_crypto3.randomUUID)();
       await handle.writeFile(JSON.stringify({ nonce, pid: process.pid }), "utf8");
       const heartbeat = setInterval(() => {
-        void import_node_fs5.promises.utimes(lock, /* @__PURE__ */ new Date(), /* @__PURE__ */ new Date()).catch(() => void 0);
+        void import_node_fs6.promises.utimes(lock, /* @__PURE__ */ new Date(), /* @__PURE__ */ new Date()).catch(() => void 0);
       }, 5e3);
       heartbeat.unref();
       try {
@@ -1372,8 +1541,8 @@ var TokenStore = class {
         clearInterval(heartbeat);
         await handle.close();
         try {
-          const contents = await import_node_fs5.promises.readFile(lock, "utf8");
-          if (contents.includes(nonce)) await import_node_fs5.promises.rm(lock, { force: true });
+          const contents = await import_node_fs6.promises.readFile(lock, "utf8");
+          if (contents.includes(nonce)) await import_node_fs6.promises.rm(lock, { force: true });
         } catch (error) {
           if (error.code !== "ENOENT") throw error;
         }
@@ -1458,7 +1627,7 @@ function store(io) {
   return io.tokenStore || new TokenStore(home(io));
 }
 function results(io) {
-  return io.resultStore || new ResultStore(import_node_path6.default.join(home(io), "results"));
+  return io.resultStore || new ResultStore(import_node_path7.default.join(home(io), "results"));
 }
 function emit(io, envelope, json) {
   if (json) {
@@ -1504,9 +1673,9 @@ async function readArguments(argv, io) {
   const file = option(argv, "--args-file");
   if (file !== void 0) {
     if (!file) throw new WorkspaceError("USAGE", "Option --args-file requires a value.");
-    const stat = await import_node_fs6.promises.stat(file);
+    const stat = await import_node_fs7.promises.stat(file);
     if (stat.size > MAX_ARGUMENT_BYTES) throw new WorkspaceError("ARGS_TOO_LARGE", "Tool arguments are too large. Keep the JSON file under 1 MB.");
-    return parseJsonObject(await import_node_fs6.promises.readFile(file, "utf8"));
+    return parseJsonObject(await import_node_fs7.promises.readFile(file, "utf8"));
   }
   if (flag2(argv, "--args")) throw new WorkspaceError("ARGS_FILE_REQUIRED", "Use --args-file or stdin so Workspace content stays out of command logs.");
   const chunks = [];
@@ -1545,14 +1714,39 @@ async function runCli(argv, io) {
   const [command, serviceName, toolName] = argv;
   try {
     if (!command || command === "--help" || command === "help") {
-      io.stdout("Commands: auth, logout, services, tools, call, mutate, auth-status\nUse --args-file for tool arguments.\n");
+      io.stdout("Commands: setup, auth, doctor, logout, services, tools, call, mutate, auth-status\nUse --args-file for tool arguments.\n");
       return 0;
     }
+    if (command === "setup") {
+      const result = await runSetup(io.env, {
+        clientSecretFile: option(argv, "--client-secret-file"),
+        clientId: option(argv, "--client-id"),
+        redirectUri: option(argv, "--redirect-uri"),
+        force: flag2(argv, "--force")
+      });
+      emit(io, makeEnvelope({ content: result }), flag2(argv, "--json"));
+      if (!flag2(argv, "--json")) io.stdout("Next: node dist/cli.js auth\nThen: node dist/cli.js doctor\n");
+      return 0;
+    }
+    if (command === "doctor") {
+      const { api } = await context(io);
+      const report = await runDoctor((service, tool, args) => api.invoke(service, tool, args, false));
+      emit(io, makeEnvelope({ content: report }), flag2(argv, "--json"));
+      return report.checks.every((check) => check.status === "enabled") ? 0 : 1;
+    }
     if (command === "auth") {
-      if (!io.stdin.isTTY) throw new WorkspaceError("TERMINAL_REQUIRED", "Run auth in an interactive terminal.");
+      const args = argv.filter((value) => value !== "--window" && value !== "--json");
+      if (!io.stdin.isTTY) {
+        if (!flag2(argv, "--window")) throw new WorkspaceError("TERMINAL_REQUIRED", "Run auth in an interactive terminal, or add --window to open one.");
+        authSelection(args);
+        const launched = await (io.launchAuth || launchAuthWindow)(args);
+        emit(io, makeEnvelope({ content: { launched: true, command: launched.command, pid: launched.pid } }), flag2(argv, "--json"));
+        if (!flag2(argv, "--json")) io.stdout("A terminal window and the Google consent page should open. Approve there, then check auth-status.\n");
+        return 0;
+      }
       const config = await loadOAuthConfig(io.env);
       const oauth = io.oauth || new WorkspaceOAuth(config, store(io));
-      const result = await oauth.authorize(authSelection(argv));
+      const result = await oauth.authorize(authSelection(args));
       emit(io, makeEnvelope({ content: result }), flag2(argv, "--json"));
       return 0;
     }
@@ -1616,8 +1810,8 @@ async function runCli(argv, io) {
 if (require.main === module) {
   assertNodeVersion();
   runCli(process.argv.slice(2), {
-    stdout: (text2) => process.stdout.write(text2),
-    stderr: (text2) => process.stderr.write(text2),
+    stdout: (text3) => process.stdout.write(text3),
+    stderr: (text3) => process.stderr.write(text3),
     stdin: process.stdin,
     env: process.env
   }).then((code) => {

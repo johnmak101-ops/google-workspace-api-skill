@@ -5,10 +5,13 @@ import { ApiError } from './api-error.js';
 import { GoogleApiClient } from './api-client.js';
 import { getOperation, getService, listOperations, listServices, UNIVERSAL_PRODUCTS, type ScopeOptions, type ServiceSelection } from './catalog.js';
 import { assertNodeVersion, loadOAuthConfig, parseJsonObject, resolveHomeDir } from './config.js';
+import { runDoctor } from './doctor.js';
 import { WorkspaceError } from './errors.js';
+import { launchAuthWindow, type LaunchResult } from './launch.js';
 import { WorkspaceOAuth } from './oauth.js';
 import { capEnvelope, makeEnvelope, redactError, serializeEnvelope, writeBoundedResult, type Envelope } from './output.js';
 import { ResultStore, type StoredResult } from './result-store.js';
+import { runSetup } from './setup.js';
 import { TokenStore } from './token-store.js';
 import { invokeReadOnly, searchUniversal } from './universal.js';
 
@@ -21,6 +24,7 @@ export interface CliIo {
   readonly oauth?: WorkspaceOAuth;
   readonly tokenStore?: TokenStore;
   readonly resultStore?: ResultStore;
+  readonly launchAuth?: (argv: readonly string[]) => Promise<LaunchResult>;
 }
 
 function home(io: CliIo): string {
@@ -130,14 +134,39 @@ export async function runCli(argv: readonly string[], io: CliIo): Promise<number
   const [command, serviceName, toolName] = argv;
   try {
     if (!command || command === '--help' || command === 'help') {
-      io.stdout('Commands: auth, logout, services, tools, call, mutate, auth-status\nUse --args-file for tool arguments.\n');
+      io.stdout('Commands: setup, auth, doctor, logout, services, tools, call, mutate, auth-status\nUse --args-file for tool arguments.\n');
       return 0;
     }
+    if (command === 'setup') {
+      const result = await runSetup(io.env, {
+        clientSecretFile: option(argv, '--client-secret-file'),
+        clientId: option(argv, '--client-id'),
+        redirectUri: option(argv, '--redirect-uri'),
+        force: flag(argv, '--force'),
+      });
+      emit(io, makeEnvelope({ content: result }), flag(argv, '--json'));
+      if (!flag(argv, '--json')) io.stdout('Next: node dist/cli.js auth\nThen: node dist/cli.js doctor\n');
+      return 0;
+    }
+    if (command === 'doctor') {
+      const { api } = await context(io);
+      const report = await runDoctor((service, tool, args) => api.invoke(service, tool, args, false));
+      emit(io, makeEnvelope({ content: report }), flag(argv, '--json'));
+      return report.checks.every((check) => check.status === 'enabled') ? 0 : 1;
+    }
     if (command === 'auth') {
-      if (!io.stdin.isTTY) throw new WorkspaceError('TERMINAL_REQUIRED', 'Run auth in an interactive terminal.');
+      const args = argv.filter((value) => value !== '--window' && value !== '--json');
+      if (!io.stdin.isTTY) {
+        if (!flag(argv, '--window')) throw new WorkspaceError('TERMINAL_REQUIRED', 'Run auth in an interactive terminal, or add --window to open one.');
+        authSelection(args);
+        const launched = await (io.launchAuth || launchAuthWindow)(args);
+        emit(io, makeEnvelope({ content: { launched: true, command: launched.command, pid: launched.pid } }), flag(argv, '--json'));
+        if (!flag(argv, '--json')) io.stdout('A terminal window and the Google consent page should open. Approve there, then check auth-status.\n');
+        return 0;
+      }
       const config = await loadOAuthConfig(io.env);
       const oauth = io.oauth || new WorkspaceOAuth(config, store(io));
-      const result = await oauth.authorize(authSelection(argv));
+      const result = await oauth.authorize(authSelection(args));
       emit(io, makeEnvelope({ content: result }), flag(argv, '--json'));
       return 0;
     }

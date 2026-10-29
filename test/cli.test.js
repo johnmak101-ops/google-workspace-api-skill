@@ -97,3 +97,26 @@ test('auth-status never exposes token values', async () => {
   assert.ok(!io.readStdout().includes('secret-r'));
   assert.ok(io.readStdout().includes('gmail'));
 });
+
+test('non-interactive auth refuses without --window and only launches with it', async () => {
+  const nonTTY = () => Object.assign(Readable.from([]), { isTTY: false });
+  const refused = ioFor({ stdin: nonTTY() });
+  assert.equal(await runCli(['auth', '--json'], refused), 1);
+  assert.equal(JSON.parse(refused.readStdout()).error.code, 'TERMINAL_REQUIRED');
+
+  const launched = [];
+  const io = ioFor({
+    stdin: nonTTY(),
+    launchAuth: async (argv) => { launched.push(argv); return { command: 'node cli.js auth --read-only', pid: 4321 }; },
+  });
+  assert.equal(await runCli(['auth', '--read-only', '--window', '--json'], io), 0);
+  const content = JSON.parse(io.readStdout()).content;
+  assert.equal(content.launched, true);
+  assert.equal(content.pid, 4321);
+  assert.deepEqual(launched[0], ['auth', '--read-only']);
+
+  const invalid = ioFor({ stdin: nonTTY(), launchAuth: async () => { throw new Error('should not launch'); } });
+  assert.equal(await runCli(['auth', '--window', '--services', 'nope', '--json'], invalid), 1);
+  assert.match(invalid.readStdout(), /UNKNOWN_SERVICE|nope/);
+});
+
